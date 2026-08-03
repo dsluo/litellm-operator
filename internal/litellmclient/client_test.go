@@ -62,6 +62,71 @@ func TestClient_CreateUpdateDeleteSendCorrectRequests(t *testing.T) {
 	assert.Equal(t, "x", calls[2].body["id"])
 }
 
+func TestClient_GenerateAndDeleteVirtualKey(t *testing.T) {
+	type call struct {
+		path string
+		body map[string]any
+	}
+	var calls []call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		calls = append(calls, call{path: r.URL.Path, body: body})
+		if r.URL.Path == "/key/generate" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"key": "sk-generated"})
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "master", srv.Client())
+	generated, err := c.GenerateVirtualKey(context.Background(), VirtualKeyRequest{
+		KeyAlias: "application",
+		Models:   []string{"openai/gpt-5"},
+		Metadata: map[string]string{"app": "example"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "sk-generated", generated.Key)
+	require.NoError(t, c.DeleteVirtualKey(context.Background(), generated.Key))
+
+	require.Len(t, calls, 2)
+	assert.Equal(t, "/key/generate", calls[0].path)
+	assert.Equal(t, "application", calls[0].body["key_alias"])
+	assert.Equal(t, []any{"openai/gpt-5"}, calls[0].body["models"])
+	assert.Equal(t, "/key/delete", calls[1].path)
+	assert.Equal(t, []any{"sk-generated"}, calls[1].body["keys"])
+}
+
+func TestClient_ManageTeam(t *testing.T) {
+	const (
+		teamID         = "platform"
+		userID         = "user"
+		teamMemberRole = "user"
+	)
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/team/new" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"team_id": teamID})
+		}
+		if r.URL.Path == "/team/info" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"team_info": map[string]any{"team_id": teamID, "members_with_roles": []any{}}})
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "master", srv.Client())
+	team, err := c.CreateTeam(context.Background(), TeamRequest{TeamID: teamID, Models: []string{}})
+	require.NoError(t, err)
+	assert.Equal(t, teamID, team.TeamID)
+	require.NoError(t, c.UpdateTeam(context.Background(), TeamRequest{TeamID: team.TeamID, Models: []string{}}))
+	_, err = c.GetTeam(context.Background(), team.TeamID)
+	require.NoError(t, err)
+	require.NoError(t, c.AddTeamMember(context.Background(), team.TeamID, TeamMember{UserID: userID, Role: teamMemberRole}))
+	require.NoError(t, c.DeleteTeamMember(context.Background(), team.TeamID, TeamMember{UserID: userID}))
+	require.NoError(t, c.DeleteTeam(context.Background(), team.TeamID))
+	assert.Equal(t, []string{"/team/new", "/team/update", "/team/info", "/team/member_add", "/team/member_delete", "/team/delete"}, paths)
+}
+
 func TestClient_Non2xxIsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

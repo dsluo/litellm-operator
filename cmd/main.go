@@ -144,6 +144,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.LiteLLMVirtualKeyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LiteLLMVirtualKey")
+		os.Exit(1)
+	}
+	if err := (&controller.LiteLLMTeamReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LiteLLMTeam")
+		os.Exit(1)
+	}
+
 	if autoRegisterEnabled() {
 		setupLLMKubeAutoRegister(mgr)
 	}

@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - secrets
   - services
   verbs:
   - create
@@ -16,14 +17,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - apps
@@ -72,6 +65,8 @@ rules:
   resources:
   - litellmmcpservers/status
   - litellmproxies/status
+  - litellmteams/status
+  - litellmvirtualkeys/status
   verbs:
   - get
   - patch
@@ -81,6 +76,8 @@ rules:
   resources:
   - litellmmodels
   - litellmproxies
+  - litellmteams
+  - litellmvirtualkeys
   verbs:
   - create
   - delete
@@ -93,5 +90,7 @@ rules:
   - litellm.home-operations.com
   resources:
   - litellmproxies/finalizers
+  - litellmteams/finalizers
+  - litellmvirtualkeys/finalizers
   verbs:
   - update

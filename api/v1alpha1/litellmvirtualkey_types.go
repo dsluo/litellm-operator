@@ -1,0 +1,110 @@
+package v1alpha1
+
+import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+// LiteLLMVirtualKeySpec defines a virtual key managed through a LiteLLMProxy.
+type LiteLLMVirtualKeySpec struct {
+	// ProxyRef is the LiteLLMProxy whose admin API creates and deletes this key.
+	// +kubebuilder:validation:Required
+	ProxyRef string `json:"proxyRef"`
+
+	// SecretName is the name of the Secret managed by the operator containing the generated key.
+	// +kubebuilder:validation:Required
+	SecretName string `json:"secretName"`
+
+	// SecretKey is the key in SecretName containing the generated virtual key.
+	// +kubebuilder:default=key
+	// +optional
+	SecretKey string `json:"secretKey,omitempty"`
+
+	// KeyAlias is a human-readable LiteLLM alias for this key.
+	// +optional
+	KeyAlias string `json:"keyAlias,omitempty"`
+
+	// Models lists the models this key may call. An empty list permits all models.
+	// +listType=atomic
+	// +optional
+	Models []string `json:"models,omitempty"`
+
+	// Aliases maps model aliases to their target model names.
+	// +optional
+	Aliases map[string]string `json:"aliases,omitempty"`
+
+	// UserID associates this key with a LiteLLM user.
+	// +optional
+	UserID string `json:"userID,omitempty"`
+
+	// TeamID associates this key with a LiteLLM team.
+	// +optional
+	TeamID string `json:"teamID,omitempty"`
+
+	// Duration is how long the key remains valid, such as "30d".
+	// +optional
+	Duration string `json:"duration,omitempty"`
+
+	// MaxBudget is the maximum spend allowed for this key as a decimal string.
+	// +optional
+	MaxBudget string `json:"maxBudget,omitempty"`
+
+	// BudgetDuration resets the budget after this duration, such as "30d".
+	// +optional
+	BudgetDuration string `json:"budgetDuration,omitempty"`
+
+	// MaxParallelRequests caps concurrent requests made with this key.
+	// +optional
+	MaxParallelRequests *int64 `json:"maxParallelRequests,omitempty"`
+
+	// TPMLimit caps tokens per minute for this key.
+	// +optional
+	TPMLimit *int64 `json:"tpmLimit,omitempty"`
+
+	// RPMLimit caps requests per minute for this key.
+	// +optional
+	RPMLimit *int64 `json:"rpmLimit,omitempty"`
+
+	// Metadata stores additional string metadata on the LiteLLM key.
+	// +optional
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// LiteLLMVirtualKeyStatus reports the observed state of the virtual key.
+type LiteLLMVirtualKeyStatus struct {
+	// Conditions represent the latest observations of the virtual key's state.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=llkey
+// +kubebuilder:printcolumn:name="Proxy",type=string,JSONPath=`.spec.proxyRef`
+// +kubebuilder:printcolumn:name="Secret",type=string,JSONPath=`.spec.secretName`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// LiteLLMVirtualKey is a virtual key generated and deleted through LiteLLM's admin API.
+type LiteLLMVirtualKey struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   LiteLLMVirtualKeySpec   `json:"spec,omitempty"`
+	Status LiteLLMVirtualKeyStatus `json:"status,omitempty"`
+}
+
+// SecretDataKey returns the configured Secret key, defaulting to "key".
+func (k *LiteLLMVirtualKey) SecretDataKey() string {
+	if k.Spec.SecretKey == "" {
+		return "key"
+	}
+	return k.Spec.SecretKey
+}
+
+// +kubebuilder:object:root=true
+
+// LiteLLMVirtualKeyList contains a list of LiteLLMVirtualKey.
+type LiteLLMVirtualKeyList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []LiteLLMVirtualKey `json:"items"`
+}

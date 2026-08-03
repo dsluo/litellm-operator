@@ -24,7 +24,8 @@ const (
 	proxyPort        = 4000
 	httpPortName     = "http"
 
-	conditionTypeReady = "Ready"
+	conditionTypeReady        = "Ready"
+	conditionReasonReconciled = "Reconciled"
 
 	keyModel         = "model"
 	keyModelName     = "model_name"

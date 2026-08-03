@@ -124,7 +124,7 @@ func (r *LiteLLMMCPServerReconciler) markReady(ctx context.Context, server *lite
 	meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReady,
 		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciled",
+		Reason:             conditionReasonReconciled,
 		Message:            "mcp server reconciled",
 		ObservedGeneration: server.Generation,
 	})

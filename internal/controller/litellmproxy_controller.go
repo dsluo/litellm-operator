@@ -240,7 +240,7 @@ func (r *LiteLLMProxyReconciler) syncModelsViaAPI(ctx context.Context, proxy *li
 	if proxy.Spec.APIAccess == nil {
 		return fmt.Errorf("applyMode=api requires spec.apiAccess")
 	}
-	key, err := r.readSecretKey(ctx, proxy.Namespace, proxy.Spec.APIAccess.MasterKeyRef)
+	key, err := readSecretKey(ctx, r.Client, proxy.Namespace, proxy.Spec.APIAccess.MasterKeyRef)
 	if err != nil {
 		return err
 	}
@@ -251,9 +251,9 @@ func (r *LiteLLMProxyReconciler) syncModelsViaAPI(ctx context.Context, proxy *li
 	return syncModels(ctx, litellmclient.New(endpoint, key, nil), desired)
 }
 
-func (r *LiteLLMProxyReconciler) readSecretKey(ctx context.Context, namespace string, ref litellmv1alpha1.SecretKeyRef) (string, error) {
+func readSecretKey(ctx context.Context, c client.Reader, namespace string, ref litellmv1alpha1.SecretKeyRef) (string, error) {
 	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &secret); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &secret); err != nil {
 		return "", err
 	}
 	value, ok := secret.Data[ref.Key]
@@ -267,7 +267,7 @@ func (r *LiteLLMProxyReconciler) markReady(ctx context.Context, proxy *litellmv1
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReady,
 		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciled",
+		Reason:             conditionReasonReconciled,
 		Message:            fmt.Sprintf("rendered %d model(s)", models),
 		ObservedGeneration: proxy.Generation,
 	})

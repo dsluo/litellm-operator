@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
+
+const teamIDJSONKey = "team_id"
 
 // Client talks to a LiteLLM proxy's admin API authenticated with the master key.
 type Client struct {
@@ -32,6 +35,54 @@ type Model struct {
 	ModelName     string         `json:"model_name"`
 	LiteLLMParams map[string]any `json:"litellm_params,omitempty"`
 	ModelInfo     map[string]any `json:"model_info,omitempty"`
+}
+
+// VirtualKeyRequest describes a virtual key accepted by POST /key/generate.
+type VirtualKeyRequest struct {
+	KeyAlias            string            `json:"key_alias,omitempty"`
+	Models              []string          `json:"models,omitempty"`
+	Aliases             map[string]string `json:"aliases,omitempty"`
+	UserID              string            `json:"user_id,omitempty"`
+	TeamID              string            `json:"team_id,omitempty"`
+	Duration            string            `json:"duration,omitempty"`
+	MaxBudget           *float64          `json:"max_budget,omitempty"`
+	BudgetDuration      string            `json:"budget_duration,omitempty"`
+	MaxParallelRequests *int64            `json:"max_parallel_requests,omitempty"`
+	TPMLimit            *int64            `json:"tpm_limit,omitempty"`
+	RPMLimit            *int64            `json:"rpm_limit,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
+}
+
+// VirtualKey is the sensitive portion of the response from POST /key/generate.
+type VirtualKey struct {
+	Key string `json:"key"`
+}
+
+// TeamMember identifies a LiteLLM team member and their role.
+type TeamMember struct {
+	UserID    string `json:"user_id,omitempty"`
+	UserEmail string `json:"user_email,omitempty"`
+	Role      string `json:"role"`
+}
+
+// TeamRequest describes a team accepted by LiteLLM's team management endpoints.
+type TeamRequest struct {
+	TeamID         string            `json:"team_id"`
+	TeamAlias      string            `json:"team_alias,omitempty"`
+	Members        []TeamMember      `json:"members_with_roles,omitempty"`
+	Models         []string          `json:"models"`
+	MaxBudget      *float64          `json:"max_budget,omitempty"`
+	BudgetDuration string            `json:"budget_duration,omitempty"`
+	TPMLimit       *int64            `json:"tpm_limit,omitempty"`
+	RPMLimit       *int64            `json:"rpm_limit,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	Blocked        *bool             `json:"blocked,omitempty"`
+}
+
+// Team is the subset of a LiteLLM team response used by the operator.
+type Team struct {
+	TeamID  string       `json:"team_id"`
+	Members []TeamMember `json:"members_with_roles"`
 }
 
 // ModelID returns the server-assigned id from model_info, if present.
@@ -67,6 +118,56 @@ func (c *Client) UpdateModel(ctx context.Context, m Model) error {
 // DeleteModel removes a model by id (POST /model/delete).
 func (c *Client) DeleteModel(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/model/delete", map[string]string{"id": id}, nil)
+}
+
+// GenerateVirtualKey creates a virtual key (POST /key/generate).
+func (c *Client) GenerateVirtualKey(ctx context.Context, key VirtualKeyRequest) (VirtualKey, error) {
+	var out VirtualKey
+	if err := c.do(ctx, http.MethodPost, "/key/generate", key, &out); err != nil {
+		return VirtualKey{}, err
+	}
+	return out, nil
+}
+
+// DeleteVirtualKey deletes a virtual key (POST /key/delete).
+func (c *Client) DeleteVirtualKey(ctx context.Context, key string) error {
+	return c.do(ctx, http.MethodPost, "/key/delete", map[string][]string{"keys": {key}}, nil)
+}
+
+// CreateTeam creates a LiteLLM team (POST /team/new).
+func (c *Client) CreateTeam(ctx context.Context, team TeamRequest) (Team, error) {
+	var out Team
+	err := c.do(ctx, http.MethodPost, "/team/new", team, &out)
+	return out, err
+}
+
+// UpdateTeam updates a LiteLLM team (POST /team/update).
+func (c *Client) UpdateTeam(ctx context.Context, team TeamRequest) error {
+	return c.do(ctx, http.MethodPost, "/team/update", team, nil)
+}
+
+// DeleteTeam deletes a LiteLLM team and its associated keys (POST /team/delete).
+func (c *Client) DeleteTeam(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/team/delete", map[string][]string{"team_ids": {id}}, nil)
+}
+
+// GetTeam returns a LiteLLM team (GET /team/info).
+func (c *Client) GetTeam(ctx context.Context, id string) (Team, error) {
+	var out struct {
+		TeamInfo Team `json:"team_info"`
+	}
+	err := c.do(ctx, http.MethodGet, "/team/info?team_id="+url.QueryEscape(id), nil, &out)
+	return out.TeamInfo, err
+}
+
+// AddTeamMember adds a member to a LiteLLM team (POST /team/member_add).
+func (c *Client) AddTeamMember(ctx context.Context, id string, m TeamMember) error {
+	return c.do(ctx, http.MethodPost, "/team/member_add", map[string]any{teamIDJSONKey: id, "member": m}, nil)
+}
+
+// DeleteTeamMember removes a member from a LiteLLM team (POST /team/member_delete).
+func (c *Client) DeleteTeamMember(ctx context.Context, id string, m TeamMember) error {
+	return c.do(ctx, http.MethodPost, "/team/member_delete", map[string]string{teamIDJSONKey: id, "user_id": m.UserID, "user_email": m.UserEmail}, nil)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
