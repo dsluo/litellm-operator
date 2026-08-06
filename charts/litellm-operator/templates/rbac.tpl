@@ -24,8 +24,23 @@ rules:
 - apiGroups:
   - litellm.home-operations.com
   resources:
+  - litellmteams
+  - litellmvirtualkeys
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - litellm.home-operations.com
+  resources:
   - litellmmcpservers/status
   - litellmproxies/status
+  - litellmteams/status
+  - litellmvirtualkeys/status
   verbs:
   - get
   - patch
@@ -34,6 +49,8 @@ rules:
   - litellm.home-operations.com
   resources:
   - litellmproxies/finalizers
+  - litellmteams/finalizers
+  - litellmvirtualkeys/finalizers
   verbs:
   - update
 - apiGroups:
