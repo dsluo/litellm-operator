@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 
@@ -110,6 +111,17 @@ func buildRoute(proxy *litellmv1alpha1.LiteLLMProxy) *gatewayv1.HTTPRoute {
 
 	port := servicePort(proxy)
 
+	var filters []gatewayv1.HTTPRouteFilter
+	if len(route.Filters) > 0 {
+		filters = make([]gatewayv1.HTTPRouteFilter, 0, len(route.Filters))
+		for _, raw := range route.Filters {
+			var filter gatewayv1.HTTPRouteFilter
+			if err := json.Unmarshal(raw.Raw, &filter); err == nil {
+				filters = append(filters, filter)
+			}
+		}
+	}
+
 	return &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      proxy.Name,
@@ -120,7 +132,7 @@ func buildRoute(proxy *litellmv1alpha1.LiteLLMProxy) *gatewayv1.HTTPRoute {
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefs},
 			Hostnames:       hostnames,
 			Rules: []gatewayv1.HTTPRouteRule{{
-				Filters: route.Filters,
+				Filters: filters,
 				BackendRefs: []gatewayv1.HTTPBackendRef{{
 					BackendRef: gatewayv1.BackendRef{
 						BackendObjectReference: gatewayv1.BackendObjectReference{

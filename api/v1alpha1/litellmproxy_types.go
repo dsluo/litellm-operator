@@ -4,7 +4,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 const (
@@ -44,8 +43,12 @@ type ProxyRoute struct {
 	ParentRefs []RouteParentRef `json:"parentRefs"`
 
 	// Filters are applied to the generated HTTPRoute rule.
+	// The upstream type is preserved as raw JSON in this CRD because its CORS
+	// CEL validation exceeds Kubernetes' CRD validation cost budget.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=array
 	// +optional
-	Filters []gatewayv1.HTTPRouteFilter `json:"filters,omitempty"`
+	Filters []runtime.RawExtension `json:"filters,omitempty"`
 }
 
 // CallbackSpec configures litellm callbacks. Success/Failure/Callbacks set the

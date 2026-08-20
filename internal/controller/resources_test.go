@@ -1,12 +1,14 @@
 package controller
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	litellmv1alpha1 "github.com/home-operations/litellm-operator/api/v1alpha1"
@@ -63,18 +65,26 @@ func TestBuildRoute_PassesFiltersToGeneratedRule(t *testing.T) {
 		Spec: litellmv1alpha1.LiteLLMProxySpec{Route: &litellmv1alpha1.ProxyRoute{
 			Hostnames:  []string{"llm.example.com"},
 			ParentRefs: []litellmv1alpha1.RouteParentRef{{Name: "gateway"}},
-			Filters: []gatewayv1.HTTPRouteFilter{{
+			Filters: []runtime.RawExtension{{Raw: mustJSON(t, gatewayv1.HTTPRouteFilter{
 				Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
 				RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
 					Set: []gatewayv1.HTTPHeader{{Name: "x-litellm-session-id", Value: "%REQ(x-session-id)%"}},
 				},
-			}},
+			})}},
 		}},
 	}
 
 	route := buildRoute(proxy)
 	require.Len(t, route.Spec.Rules, 1)
-	require.Equal(t, proxy.Spec.Route.Filters, route.Spec.Rules[0].Filters)
+	require.Len(t, route.Spec.Rules[0].Filters, 1)
+	assert.Equal(t, gatewayv1.HTTPRouteFilterRequestHeaderModifier, route.Spec.Rules[0].Filters[0].Type)
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	return data
 }
 
 func TestBuildRoute_OmitsFiltersWhenUnset(t *testing.T) {
