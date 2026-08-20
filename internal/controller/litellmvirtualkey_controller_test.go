@@ -23,13 +23,25 @@ import (
 const (
 	testMasterSecretName = "master"
 	testMasterSecretKey  = "key"
+	testKeyInfoPath      = "/key/info"
+	testKeyAlias         = "application"
+	testKeyModel         = "openai/gpt-5"
+	testKeyTeam          = "team-a"
 )
 
 func TestLiteLLMVirtualKeyReconciler_ReconcileCreatesSecretOnce(t *testing.T) {
 	var requests []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/key/generate", r.URL.Path)
 		assert.Equal(t, "Bearer master", r.Header.Get("Authorization"))
+		if r.URL.Path == testKeyInfoPath {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"key_alias": testKeyAlias,
+				"models":    []string{testKeyModel},
+				"team_id":   testKeyTeam,
+			})
+			return
+		}
+		assert.Equal(t, "/key/generate", r.URL.Path)
 		var request map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
 		requests = append(requests, request)
@@ -56,9 +68,37 @@ func TestLiteLLMVirtualKeyReconciler_ReconcileCreatesSecretOnce(t *testing.T) {
 	assert.Equal(t, []byte("sk-generated"), secret.Data["token"])
 	assert.True(t, metav1.IsControlledBy(&secret, key))
 	require.Len(t, requests, 1)
-	assert.Equal(t, "application", requests[0]["key_alias"])
-	assert.Equal(t, []any{"openai/gpt-5"}, requests[0]["models"])
-	assert.Equal(t, "team-a", requests[0]["team_id"])
+	assert.Equal(t, testKeyAlias, requests[0]["key_alias"])
+	assert.Equal(t, []any{testKeyModel}, requests[0]["models"])
+	assert.Equal(t, testKeyTeam, requests[0]["team_id"])
+}
+
+func TestLiteLLMVirtualKeyReconciler_ReconcileUpdatesChangedSpec(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case testKeyInfoPath:
+			_ = json.NewEncoder(w).Encode(map[string]any{"key_alias": testKeyAlias, "models": []string{"old"}, "team_id": testKeyTeam})
+		case "/key/update":
+			var request map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			assert.Equal(t, []any{testKeyModel}, request["models"])
+		}
+	}))
+	defer srv.Close()
+
+	key := testVirtualKey()
+	proxy := testVirtualKeyProxy(srv.URL)
+	masterKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testMasterSecretName, Namespace: key.Namespace}, Data: map[string][]byte{testMasterSecretKey: []byte("master")}}
+	output := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key.Spec.SecretName, Namespace: key.Namespace}, Data: map[string][]byte{key.SecretDataKey(): []byte("sk-generated")}}
+	r := testVirtualKeyReconciler(t, key, proxy, masterKey, output)
+	require.NoError(t, ctrl.SetControllerReference(key, output, r.Scheme))
+	require.NoError(t, r.Update(t.Context(), output))
+
+	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: key.Namespace, Name: key.Name}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{testKeyInfoPath, "/key/update"}, paths)
 }
 
 func TestLiteLLMVirtualKeyReconciler_ReconcileDeleteDeletesRemoteKey(t *testing.T) {

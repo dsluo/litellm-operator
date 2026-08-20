@@ -55,7 +55,19 @@ type VirtualKeyRequest struct {
 
 // VirtualKey is the sensitive portion of the response from POST /key/generate.
 type VirtualKey struct {
-	Key string `json:"key"`
+	Key                 string            `json:"key,omitempty"`
+	KeyAlias            string            `json:"key_alias,omitempty"`
+	Models              []string          `json:"models,omitempty"`
+	Aliases             map[string]string `json:"aliases,omitempty"`
+	UserID              string            `json:"user_id,omitempty"`
+	TeamID              string            `json:"team_id,omitempty"`
+	Duration            string            `json:"duration,omitempty"`
+	MaxBudget           *float64          `json:"max_budget,omitempty"`
+	BudgetDuration      string            `json:"budget_duration,omitempty"`
+	MaxParallelRequests *int64            `json:"max_parallel_requests,omitempty"`
+	TPMLimit            *int64            `json:"tpm_limit,omitempty"`
+	RPMLimit            *int64            `json:"rpm_limit,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
 }
 
 // TeamMember identifies a LiteLLM team member and their role.
@@ -127,6 +139,30 @@ func (c *Client) GenerateVirtualKey(ctx context.Context, key VirtualKeyRequest) 
 		return VirtualKey{}, err
 	}
 	return out, nil
+}
+
+// GetVirtualKey returns a virtual key's current settings (GET /key/info).
+func (c *Client) GetVirtualKey(ctx context.Context, key string) (VirtualKey, error) {
+	var out VirtualKey
+	err := c.do(ctx, http.MethodGet, "/key/info?key="+url.QueryEscape(key), nil, &out)
+	return out, err
+}
+
+// UpdateVirtualKey updates a virtual key in place (POST /key/update).
+func (c *Client) UpdateVirtualKey(ctx context.Context, key string, request VirtualKeyRequest) error {
+	body := map[string]any{"key": key}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("encode /key/update body: %w", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return fmt.Errorf("encode /key/update fields: %w", err)
+	}
+	for name, value := range fields {
+		body[name] = value
+	}
+	return c.do(ctx, http.MethodPost, "/key/update", body, nil)
 }
 
 // DeleteVirtualKey deletes a virtual key (POST /key/delete).

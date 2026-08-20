@@ -96,6 +96,28 @@ func TestClient_GenerateAndDeleteVirtualKey(t *testing.T) {
 	assert.Equal(t, []any{"sk-generated"}, calls[1].body["keys"])
 }
 
+func TestClient_GetAndUpdateVirtualKey(t *testing.T) {
+	var update map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/key/info" {
+			assert.Equal(t, "sk-live", r.URL.Query().Get("key"))
+			_ = json.NewEncoder(w).Encode(map[string]any{"key_alias": "application", "models": []string{"old"}})
+			return
+		}
+		require.Equal(t, "/key/update", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&update))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "master", srv.Client())
+	live, err := c.GetVirtualKey(context.Background(), "sk-live")
+	require.NoError(t, err)
+	assert.Equal(t, "application", live.KeyAlias)
+	require.NoError(t, c.UpdateVirtualKey(context.Background(), "sk-live", VirtualKeyRequest{Models: []string{"new"}}))
+	assert.Equal(t, "sk-live", update["key"])
+	assert.Equal(t, []any{"new"}, update["models"])
+}
+
 func TestClient_ManageTeam(t *testing.T) {
 	const (
 		teamID         = "platform"

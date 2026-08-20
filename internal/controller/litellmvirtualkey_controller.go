@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -61,6 +62,24 @@ func (r *LiteLLMVirtualKeyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if len(secret.Data[virtualKey.SecretDataKey()]) == 0 {
 			return ctrl.Result{}, r.markFailed(ctx, &virtualKey, "SecretKeyMissing", "output Secret does not contain the generated key")
 		}
+		admin, err := r.adminClient(ctx, &virtualKey)
+		if err != nil {
+			return ctrl.Result{}, r.markFailed(ctx, &virtualKey, "AdminClientFailed", err.Error())
+		}
+		requestBody, err := virtualKeyRequest(&virtualKey)
+		if err != nil {
+			return ctrl.Result{}, r.markFailed(ctx, &virtualKey, "InvalidSpec", err.Error())
+		}
+		live, err := admin.GetVirtualKey(ctx, string(secret.Data[virtualKey.SecretDataKey()]))
+		if err != nil {
+			return ctrl.Result{}, r.markFailed(ctx, &virtualKey, "GetFailed", err.Error())
+		}
+		if virtualKeyRequestsEqual(live, requestBody) {
+			return ctrl.Result{}, r.markReady(ctx, &virtualKey)
+		}
+		if err := admin.UpdateVirtualKey(ctx, string(secret.Data[virtualKey.SecretDataKey()]), requestBody); err != nil {
+			return ctrl.Result{}, r.markFailed(ctx, &virtualKey, "UpdateFailed", err.Error())
+		}
 		return ctrl.Result{}, r.markReady(ctx, &virtualKey)
 	case !apierrors.IsNotFound(err):
 		return ctrl.Result{}, fmt.Errorf("get output Secret: %w", err)
@@ -96,6 +115,19 @@ func (r *LiteLLMVirtualKeyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, fmt.Errorf("create output Secret: %w", err)
 	}
 	return ctrl.Result{}, r.markReady(ctx, &virtualKey)
+}
+
+func virtualKeyRequestsEqual(live litellmclient.VirtualKey, desired litellmclient.VirtualKeyRequest) bool {
+	return live.KeyAlias == desired.KeyAlias &&
+		reflect.DeepEqual(live.Models, desired.Models) &&
+		reflect.DeepEqual(live.Aliases, desired.Aliases) &&
+		live.UserID == desired.UserID && live.TeamID == desired.TeamID &&
+		live.Duration == desired.Duration && reflect.DeepEqual(live.MaxBudget, desired.MaxBudget) &&
+		live.BudgetDuration == desired.BudgetDuration &&
+		reflect.DeepEqual(live.MaxParallelRequests, desired.MaxParallelRequests) &&
+		reflect.DeepEqual(live.TPMLimit, desired.TPMLimit) &&
+		reflect.DeepEqual(live.RPMLimit, desired.RPMLimit) &&
+		reflect.DeepEqual(live.Metadata, desired.Metadata)
 }
 
 func (r *LiteLLMVirtualKeyReconciler) reconcileDelete(ctx context.Context, virtualKey *litellmv1alpha1.LiteLLMVirtualKey) error {
