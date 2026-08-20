@@ -120,6 +120,7 @@ func buildRoute(proxy *litellmv1alpha1.LiteLLMProxy) *gatewayv1.HTTPRoute {
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefs},
 			Hostnames:       hostnames,
 			Rules: []gatewayv1.HTTPRouteRule{{
+				Filters: route.Filters,
 				BackendRefs: []gatewayv1.HTTPBackendRef{{
 					BackendRef: gatewayv1.BackendRef{
 						BackendObjectReference: gatewayv1.BackendObjectReference{

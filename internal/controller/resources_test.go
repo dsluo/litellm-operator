@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	litellmv1alpha1 "github.com/home-operations/litellm-operator/api/v1alpha1"
 )
@@ -54,6 +55,39 @@ func TestBuildService_DefaultsPortWhenUnset(t *testing.T) {
 
 	proxy.Spec.Service.Port = 8080
 	assert.Equal(t, int32(8080), buildService(proxy).Spec.Ports[0].Port)
+}
+
+func TestBuildRoute_PassesFiltersToGeneratedRule(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: "ai"},
+		Spec: litellmv1alpha1.LiteLLMProxySpec{Route: &litellmv1alpha1.ProxyRoute{
+			Hostnames:  []string{"llm.example.com"},
+			ParentRefs: []litellmv1alpha1.RouteParentRef{{Name: "gateway"}},
+			Filters: []gatewayv1.HTTPRouteFilter{{
+				Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+				RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+					Set: []gatewayv1.HTTPHeader{{Name: "x-litellm-session-id", Value: "%REQ(x-session-id)%"}},
+				},
+			}},
+		}},
+	}
+
+	route := buildRoute(proxy)
+	require.Len(t, route.Spec.Rules, 1)
+	require.Equal(t, proxy.Spec.Route.Filters, route.Spec.Rules[0].Filters)
+}
+
+func TestBuildRoute_OmitsFiltersWhenUnset(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: "ai"},
+		Spec: litellmv1alpha1.LiteLLMProxySpec{Route: &litellmv1alpha1.ProxyRoute{
+			Hostnames:  []string{"llm.example.com"},
+			ParentRefs: []litellmv1alpha1.RouteParentRef{{Name: "gateway"}},
+		}},
+	}
+
+	route := buildRoute(proxy)
+	assert.Nil(t, route.Spec.Rules[0].Filters)
 }
 
 func TestBuildDeployment_ConfigHashOnPodTemplate(t *testing.T) {
