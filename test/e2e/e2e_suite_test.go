@@ -8,6 +8,8 @@
 package e2e
 
 import (
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -35,6 +37,12 @@ var _ = BeforeSuite(func() {
 
 	By("loading the image into the kind cluster")
 	_, err = run("kind", "load", "docker-image", image, "--name", kindCluster())
+	Expect(err).NotTo(HaveOccurred())
+
+	By("installing Gateway API CRDs")
+	gatewayCRDs, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "sigs.k8s.io/gateway-api").Output()
+	Expect(err).NotTo(HaveOccurred())
+	_, err = kubectl("apply", "-f", filepath.Join(strings.TrimSpace(string(gatewayCRDs)), "config", "crd", "standard"))
 	Expect(err).NotTo(HaveOccurred())
 
 	By("installing the chart")
