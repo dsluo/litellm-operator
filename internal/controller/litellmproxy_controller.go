@@ -342,6 +342,7 @@ func (r *LiteLLMProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&gatewayv1.HTTPRoute{}).
 		Watches(&litellmv1alpha1.LiteLLMModel{}, handler.EnqueueRequestsFromMapFunc(r.proxiesForObject(modelRef))).
 		Watches(&litellmv1alpha1.LiteLLMGuardrail{}, handler.EnqueueRequestsFromMapFunc(r.proxiesForObject(guardrailRef))).
 		Watches(&litellmv1alpha1.LiteLLMMCPServer{}, handler.EnqueueRequestsFromMapFunc(r.proxiesForObject(mcpRef))).
