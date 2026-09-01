@@ -31,6 +31,11 @@ const virtualKeyFinalizer = "litellm.home-operations.com/virtual-key"
 const (
 	managedAnnotationKeysAnnotation = "litellm.home-operations.com/managed-annotations"
 	managedLabelKeysAnnotation      = "litellm.home-operations.com/managed-labels"
+
+	// Prefix the bookkeeping annotations share. The spec may not declare keys under
+	// it: recordManaged writes them last, so a collision would silently discard the
+	// user's value on every reconcile.
+	managedKeysPrefix = "litellm.home-operations.com/managed-"
 )
 
 // LiteLLMVirtualKeyReconciler creates LiteLLM virtual keys and stores them in
@@ -62,6 +67,12 @@ func (r *LiteLLMVirtualKeyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if err := r.Update(ctx, &virtualKey); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
+	}
+
+	// Guarded ahead of both the Secret-exists and Secret-absent paths below, so
+	// neither writes Secret metadata nor calls the admin API for an invalid spec.
+	if err := reservedSecretMetadata(&virtualKey); err != nil {
+		return ctrl.Result{}, r.markFailed(ctx, &virtualKey, "InvalidSpec", err.Error())
 	}
 
 	secret, err := r.outputSecret(ctx, &virtualKey)
@@ -132,6 +143,26 @@ func (r *LiteLLMVirtualKeyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, fmt.Errorf("create output Secret: %w", err)
 	}
 	return ctrl.Result{}, r.markReady(ctx, &virtualKey)
+}
+
+// reservedSecretMetadata reports the lowest-sorting Secret annotation or label key
+// the spec declares inside the operator's bookkeeping namespace, so the message
+// names the same key on every reconcile.
+func reservedSecretMetadata(virtualKey *litellmv1alpha1.LiteLLMVirtualKey) error {
+	for _, field := range []struct {
+		name    string
+		desired map[string]string
+	}{
+		{"secretAnnotations", virtualKey.Spec.SecretAnnotations},
+		{"secretLabels", virtualKey.Spec.SecretLabels},
+	} {
+		for _, key := range slices.Sorted(maps.Keys(field.desired)) {
+			if strings.HasPrefix(key, managedKeysPrefix) {
+				return fmt.Errorf("spec.%s key %q is reserved: the operator manages keys prefixed %q", field.name, key, managedKeysPrefix)
+			}
+		}
+	}
+	return nil
 }
 
 // applySecretMetadata stamps the spec's Secret annotations and labels onto secret,

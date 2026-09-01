@@ -5,8 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,6 +38,10 @@ const (
 	testUnmanagedValue = "keep"
 	// A value some other writer put on a key the spec also names.
 	testForeignValue = "theirs"
+
+	testGeneratedKey    = "sk-generated"
+	testAnnotationsSpec = "spec.secretAnnotations"
+	testLabelsSpec      = "spec.secretLabels"
 )
 
 // writeTestKeyInfo answers /key/info with the key testVirtualKey asks for, so the
@@ -248,6 +255,130 @@ func TestApplySecretMetadata(t *testing.T) {
 			assert.False(t, applySecretMetadata(secret, key), "a second apply is a no-op")
 		})
 	}
+}
+
+func TestLiteLLMVirtualKeyReconciler_ReconcileRejectsReservedSecretMetadata(t *testing.T) {
+	tests := []struct {
+		name         string
+		reservedKey  string
+		inLabels     bool
+		secretExists bool
+		wantField    string
+	}{
+		{
+			name:        "tracker annotation declared as an annotation, Secret absent",
+			reservedKey: managedAnnotationKeysAnnotation,
+			wantField:   testAnnotationsSpec,
+		},
+		{
+			name:         "tracker annotation declared as an annotation, Secret exists",
+			reservedKey:  managedAnnotationKeysAnnotation,
+			secretExists: true,
+			wantField:    testAnnotationsSpec,
+		},
+		{
+			name:        "unassigned reserved key declared as a label, Secret absent",
+			reservedKey: managedKeysPrefix + "future",
+			inLabels:    true,
+			wantField:   testLabelsSpec,
+		},
+		{
+			name:         "tracker annotation declared as a label, Secret exists",
+			reservedKey:  managedLabelKeysAnnotation,
+			inLabels:     true,
+			secretExists: true,
+			wantField:    testLabelsSpec,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				assert.Fail(t, "unexpected admin API call", r.URL.Path)
+			}))
+			defer srv.Close()
+
+			key := testVirtualKey()
+			reserved := map[string]string{tt.reservedKey: "user-value"}
+			if tt.inLabels {
+				key.Spec.SecretLabels = reserved
+			} else {
+				key.Spec.SecretAnnotations = reserved
+			}
+			proxy := testVirtualKeyProxy(srv.URL)
+			masterKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testMasterSecretName, Namespace: key.Namespace}, Data: map[string][]byte{testMasterSecretKey: []byte("master")}}
+			objects := []runtime.Object{key, proxy, masterKey}
+			output := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        key.Spec.SecretName,
+					Namespace:   key.Namespace,
+					Annotations: map[string]string{testUnmanagedKey: testUnmanagedValue},
+					Labels:      map[string]string{testUnmanagedKey: testUnmanagedValue},
+				},
+				Data: map[string][]byte{key.SecretDataKey(): []byte(testGeneratedKey)},
+			}
+			if tt.secretExists {
+				objects = append(objects, output)
+			}
+			r := testVirtualKeyReconciler(t, objects...)
+			if tt.secretExists {
+				require.NoError(t, ctrl.SetControllerReference(key, output, r.Scheme))
+				require.NoError(t, r.Update(t.Context(), output))
+			}
+
+			_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: key.Namespace, Name: key.Name}})
+			require.ErrorContains(t, err, "InvalidSpec")
+			require.ErrorContains(t, err, tt.wantField)
+			require.ErrorContains(t, err, tt.reservedKey)
+
+			var secret corev1.Secret
+			getErr := r.Get(t.Context(), types.NamespacedName{Namespace: key.Namespace, Name: key.Spec.SecretName}, &secret)
+			if !tt.secretExists {
+				assert.True(t, apierrors.IsNotFound(getErr), "no Secret is created for an invalid spec")
+				return
+			}
+			require.NoError(t, getErr)
+			assert.Equal(t, map[string]string{testUnmanagedKey: testUnmanagedValue}, secret.Annotations, "existing Secret metadata is left alone")
+			assert.Equal(t, map[string]string{testUnmanagedKey: testUnmanagedValue}, secret.Labels)
+
+			var reconciled litellmv1alpha1.LiteLLMVirtualKey
+			require.NoError(t, r.Get(t.Context(), types.NamespacedName{Namespace: key.Namespace, Name: key.Name}, &reconciled))
+			condition := meta.FindStatusCondition(reconciled.Status.Conditions, conditionTypeReady)
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, "InvalidSpec", condition.Reason)
+		})
+	}
+}
+
+// A spec the guard rejects must still be able to release its remote key, so
+// reconcileDelete never consults the reserved-key guard.
+func TestLiteLLMVirtualKeyReconciler_ReconcileDeleteIgnoresReservedSecretMetadata(t *testing.T) {
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/key/delete", r.URL.Path)
+		var request struct {
+			Keys []string `json:"keys"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		deleted = request.Keys
+	}))
+	defer srv.Close()
+
+	key := testVirtualKey()
+	key.Finalizers = []string{virtualKeyFinalizer}
+	key.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	key.Spec.SecretAnnotations = map[string]string{managedAnnotationKeysAnnotation: "user-value"}
+	proxy := testVirtualKeyProxy(srv.URL)
+	masterKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testMasterSecretName, Namespace: key.Namespace}, Data: map[string][]byte{testMasterSecretKey: []byte("master")}}
+	output := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Spec.SecretName, Namespace: key.Namespace},
+		Data:       map[string][]byte{key.SecretDataKey(): []byte(testGeneratedKey)},
+	}
+	r := testVirtualKeyReconciler(t, key, proxy, masterKey, output)
+
+	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: key.Namespace, Name: key.Name}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{testGeneratedKey}, deleted)
 }
 
 func TestLiteLLMVirtualKeyReconciler_ReconcileDeleteDeletesRemoteKey(t *testing.T) {
