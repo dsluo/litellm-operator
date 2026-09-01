@@ -17,6 +17,19 @@ type LiteLLMVirtualKeySpec struct {
 	// +optional
 	SecretKey string `json:"secretKey,omitempty"`
 
+	// SecretAnnotations are stamped on the generated Secret, so it can carry
+	// annotations other controllers act on, such as kubernetes-reflector's
+	// reflection-allowed on the source Secret. The operator manages only the keys
+	// named here: annotations written by anything else are left alone, and a key
+	// dropped from this map is removed from the Secret on the next reconcile.
+	// +optional
+	SecretAnnotations map[string]string `json:"secretAnnotations,omitempty"`
+
+	// SecretLabels are stamped on the generated Secret, under the same
+	// operator-manages-only-these-keys rule as SecretAnnotations.
+	// +optional
+	SecretLabels map[string]string `json:"secretLabels,omitempty"`
+
 	// KeyAlias is a human-readable LiteLLM alias for this key.
 	// +optional
 	KeyAlias string `json:"keyAlias,omitempty"`

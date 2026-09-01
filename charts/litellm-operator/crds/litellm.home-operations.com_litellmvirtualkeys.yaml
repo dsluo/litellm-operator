@@ -98,11 +98,28 @@ spec:
                 description: RPMLimit caps requests per minute for this key.
                 format: int64
                 type: integer
+              secretAnnotations:
+                additionalProperties:
+                  type: string
+                description: |-
+                  SecretAnnotations are stamped on the generated Secret, so it can carry
+                  annotations other controllers act on, such as kubernetes-reflector's
+                  reflection-allowed on the source Secret. The operator manages only the keys
+                  named here: annotations written by anything else are left alone, and a key
+                  dropped from this map is removed from the Secret on the next reconcile.
+                type: object
               secretKey:
                 default: key
                 description: SecretKey is the key in SecretName containing the generated
                   virtual key.
                 type: string
+              secretLabels:
+                additionalProperties:
+                  type: string
+                description: |-
+                  SecretLabels are stamped on the generated Secret, under the same
+                  operator-manages-only-these-keys rule as SecretAnnotations.
+                type: object
               secretName:
                 description: SecretName is the name of the Secret managed by the operator
                   containing the generated key.
