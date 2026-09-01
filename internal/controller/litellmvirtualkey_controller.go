@@ -3,8 +3,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,6 +24,19 @@ import (
 )
 
 const virtualKeyFinalizer = "litellm.home-operations.com/virtual-key"
+
+// Keys the operator stamped on the output Secret on the previous reconcile,
+// recorded as sorted comma-separated lists so a key dropped from the spec can be
+// removed without disturbing metadata any other controller owns.
+const (
+	managedAnnotationKeysAnnotation = "litellm.home-operations.com/managed-annotations"
+	managedLabelKeysAnnotation      = "litellm.home-operations.com/managed-labels"
+
+	// Prefix the bookkeeping annotations share. The spec may not declare keys under
+	// it: recordManaged writes them last, so a collision would silently discard the
+	// user's value on every reconcile.
+	managedKeysPrefix = "litellm.home-operations.com/managed-"
+)
 
 // LiteLLMVirtualKeyReconciler creates LiteLLM virtual keys and stores them in
 // Secrets owned by their LiteLLMVirtualKey resources.
@@ -53,6 +69,12 @@ func (r *LiteLLMVirtualKeyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
+	// Guarded ahead of both the Secret-exists and Secret-absent paths below, so
+	// neither writes Secret metadata nor calls the admin API for an invalid spec.
+	if err := reservedSecretMetadata(&virtualKey); err != nil {
+		return ctrl.Result{}, r.markFailed(ctx, &virtualKey, "InvalidSpec", err.Error())
+	}
+
 	secret, err := r.outputSecret(ctx, &virtualKey)
 	switch {
 	case err == nil:
@@ -61,6 +83,11 @@ func (r *LiteLLMVirtualKeyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		if len(secret.Data[virtualKey.SecretDataKey()]) == 0 {
 			return ctrl.Result{}, r.markFailed(ctx, &virtualKey, "SecretKeyMissing", "output Secret does not contain the generated key")
+		}
+		if applySecretMetadata(secret, &virtualKey) {
+			if err := r.Update(ctx, secret); err != nil {
+				return ctrl.Result{}, fmt.Errorf("update output Secret metadata: %w", err)
+			}
 		}
 		admin, err := r.adminClient(ctx, &virtualKey)
 		if err != nil {
@@ -105,6 +132,7 @@ func (r *LiteLLMVirtualKeyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		ObjectMeta: metav1.ObjectMeta{Name: virtualKey.Spec.SecretName, Namespace: virtualKey.Namespace},
 		Data:       map[string][]byte{virtualKey.SecretDataKey(): []byte(generated.Key)},
 	}
+	applySecretMetadata(secret, &virtualKey)
 	if err := controllerutil.SetControllerReference(&virtualKey, secret, r.Scheme); err != nil {
 		return ctrl.Result{}, fmt.Errorf("set output Secret owner: %w", err)
 	}
@@ -115,6 +143,83 @@ func (r *LiteLLMVirtualKeyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, fmt.Errorf("create output Secret: %w", err)
 	}
 	return ctrl.Result{}, r.markReady(ctx, &virtualKey)
+}
+
+// reservedSecretMetadata reports the lowest-sorting Secret annotation or label key
+// the spec declares inside the operator's bookkeeping namespace, so the message
+// names the same key on every reconcile.
+func reservedSecretMetadata(virtualKey *litellmv1alpha1.LiteLLMVirtualKey) error {
+	for _, field := range []struct {
+		name    string
+		desired map[string]string
+	}{
+		{"secretAnnotations", virtualKey.Spec.SecretAnnotations},
+		{"secretLabels", virtualKey.Spec.SecretLabels},
+	} {
+		for _, key := range slices.Sorted(maps.Keys(field.desired)) {
+			if strings.HasPrefix(key, managedKeysPrefix) {
+				return fmt.Errorf("spec.%s key %q is reserved: the operator manages keys prefixed %q", field.name, key, managedKeysPrefix)
+			}
+		}
+	}
+	return nil
+}
+
+// applySecretMetadata stamps the spec's Secret annotations and labels onto secret,
+// dropping keys the operator managed before that the spec no longer declares, and
+// reports whether that changed anything. Data is never touched.
+func applySecretMetadata(secret *corev1.Secret, virtualKey *litellmv1alpha1.LiteLLMVirtualKey) bool {
+	annotations, managedAnnotations := mergeManaged(secret.Annotations, virtualKey.Spec.SecretAnnotations,
+		previouslyManaged(secret.Annotations[managedAnnotationKeysAnnotation]))
+	labels, managedLabels := mergeManaged(secret.Labels, virtualKey.Spec.SecretLabels,
+		previouslyManaged(secret.Annotations[managedLabelKeysAnnotation]))
+	recordManaged(annotations, managedAnnotationKeysAnnotation, managedAnnotations)
+	recordManaged(annotations, managedLabelKeysAnnotation, managedLabels)
+	// Leave an empty map absent rather than writing `annotations: {}` back.
+	if len(annotations) == 0 {
+		annotations = nil
+	}
+	if len(labels) == 0 {
+		labels = nil
+	}
+
+	if maps.Equal(annotations, secret.Annotations) && maps.Equal(labels, secret.Labels) {
+		return false
+	}
+	secret.Annotations, secret.Labels = annotations, labels
+	return true
+}
+
+// mergeManaged applies desired onto a copy of current, removes previously managed
+// keys desired no longer declares, and returns the result with the keys now
+// managed. Keys the operator has never managed survive untouched.
+func mergeManaged(current, desired map[string]string, previous []string) (map[string]string, []string) {
+	merged := maps.Clone(current)
+	if merged == nil {
+		merged = make(map[string]string, len(desired))
+	}
+	for _, key := range previous {
+		if _, ok := desired[key]; !ok {
+			delete(merged, key)
+		}
+	}
+	maps.Copy(merged, desired)
+	return merged, slices.Sorted(maps.Keys(desired))
+}
+
+func previouslyManaged(record string) []string {
+	if record == "" {
+		return nil
+	}
+	return strings.Split(record, ",")
+}
+
+func recordManaged(annotations map[string]string, name string, keys []string) {
+	if len(keys) == 0 {
+		delete(annotations, name)
+		return
+	}
+	annotations[name] = strings.Join(keys, ",")
 }
 
 func virtualKeyRequestsEqual(live litellmclient.VirtualKey, desired litellmclient.VirtualKeyRequest) bool {

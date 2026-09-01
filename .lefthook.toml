@@ -26,6 +26,7 @@ exclude = ["charts/litellm-operator/values.schema.json"]
 # ignored, e.g. a commit that only touches a regenerated CRD).
 [pre-commit.commands.format-yaml]
 exclude = [
+  "charts/litellm-operator/crds/*",
   "config/crd/bases/*",
   "config/rbac/role.yaml",
   "config/webhook/manifests.yaml",

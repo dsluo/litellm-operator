@@ -145,6 +145,41 @@ operator wires env vars onto the Deployment and never reads secret values itself
 The operator only manages models it created (tagged in `model_info`), leaving
 UI- or hand-added models alone.
 
+## Virtual keys
+
+A `LiteLLMVirtualKey` mints a key through the proxy's admin API and writes it to a
+Secret it owns in the same namespace, deleting the remote key when the resource
+goes away. `secretAnnotations` and `secretLabels` land on that Secret, so it can
+carry metadata other controllers act on — notably kubernetes-reflector's
+`reflection-allowed`, which has to sit on the _source_ Secret for the key to be
+mirrored into another namespace:
+
+```yaml
+apiVersion: litellm.home-operations.com/v1alpha1
+kind: LiteLLMVirtualKey
+metadata:
+  name: application
+  namespace: ai
+spec:
+  proxyRef: main
+  secretName: application-key
+  keyAlias: application
+  secretAnnotations:
+    reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+    reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: apps
+    reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+```
+
+The operator manages only the keys the spec names: metadata written by anything
+else — reflector's own bookkeeping on the mirror, another controller's
+annotations — is left alone, and a key dropped from the spec is removed from the
+Secret on the next reconcile. It tells the two apart by recording the keys it
+applied in `litellm.home-operations.com/managed-annotations` and
+`.../managed-labels` on the Secret. The `litellm.home-operations.com/managed-`
+prefix is reserved for that bookkeeping: the CRD rejects a `secretAnnotations` or
+`secretLabels` key using it. Both maps reconcile in place, so editing them
+neither rotates the key nor touches the Secret's data.
+
 ## Validation
 
 A validating admission webhook (enabled by default) rejects mistakes before they
