@@ -107,7 +107,13 @@ spec:
                   reflection-allowed on the source Secret. The operator manages only the keys
                   named here: annotations written by anything else are left alone, and a key
                   dropped from this map is removed from the Secret on the next reconcile.
+                  The litellm.home-operations.com/managed- prefix is reserved for the
+                  annotations recording which keys the operator manages.
                 type: object
+                x-kubernetes-validations:
+                - message: secretAnnotations must not use the reserved litellm.home-operations.com/managed-
+                    key prefix
+                  rule: self.all(k, !k.startsWith('litellm.home-operations.com/managed-'))
               secretKey:
                 default: key
                 description: SecretKey is the key in SecretName containing the generated
@@ -120,6 +126,10 @@ spec:
                   SecretLabels are stamped on the generated Secret, under the same
                   operator-manages-only-these-keys rule as SecretAnnotations.
                 type: object
+                x-kubernetes-validations:
+                - message: secretLabels must not use the reserved litellm.home-operations.com/managed-
+                    key prefix
+                  rule: self.all(k, !k.startsWith('litellm.home-operations.com/managed-'))
               secretName:
                 description: SecretName is the name of the Secret managed by the operator
                   containing the generated key.

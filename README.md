@@ -175,7 +175,9 @@ else — reflector's own bookkeeping on the mirror, another controller's
 annotations — is left alone, and a key dropped from the spec is removed from the
 Secret on the next reconcile. It tells the two apart by recording the keys it
 applied in `litellm.home-operations.com/managed-annotations` and
-`.../managed-labels` on the Secret. Both maps reconcile in place, so editing them
+`.../managed-labels` on the Secret. The `litellm.home-operations.com/managed-`
+prefix is reserved for that bookkeeping: the CRD rejects a `secretAnnotations` or
+`secretLabels` key using it. Both maps reconcile in place, so editing them
 neither rotates the key nor touches the Secret's data.
 
 ## Validation

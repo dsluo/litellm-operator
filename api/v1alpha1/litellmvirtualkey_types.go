@@ -22,11 +22,15 @@ type LiteLLMVirtualKeySpec struct {
 	// reflection-allowed on the source Secret. The operator manages only the keys
 	// named here: annotations written by anything else are left alone, and a key
 	// dropped from this map is removed from the Secret on the next reconcile.
+	// The litellm.home-operations.com/managed- prefix is reserved for the
+	// annotations recording which keys the operator manages.
+	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.startsWith('litellm.home-operations.com/managed-'))",message="secretAnnotations must not use the reserved litellm.home-operations.com/managed- key prefix"
 	// +optional
 	SecretAnnotations map[string]string `json:"secretAnnotations,omitempty"`
 
 	// SecretLabels are stamped on the generated Secret, under the same
 	// operator-manages-only-these-keys rule as SecretAnnotations.
+	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.startsWith('litellm.home-operations.com/managed-'))",message="secretLabels must not use the reserved litellm.home-operations.com/managed- key prefix"
 	// +optional
 	SecretLabels map[string]string `json:"secretLabels,omitempty"`
 

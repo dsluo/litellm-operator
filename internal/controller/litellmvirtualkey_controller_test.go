@@ -33,6 +33,8 @@ const (
 	// Metadata on the output Secret that the operator never manages.
 	testUnmanagedKey   = "other"
 	testUnmanagedValue = "keep"
+	// A value some other writer put on a key the spec also names.
+	testForeignValue = "theirs"
 )
 
 // writeTestKeyInfo answers /key/info with the key testVirtualKey asks for, so the
@@ -203,9 +205,21 @@ func TestApplySecretMetadata(t *testing.T) {
 		},
 		{
 			name:        "unmanaged keys are never adopted",
-			annotations: map[string]string{"a": "theirs"},
+			annotations: map[string]string{"a": testForeignValue},
 			wantAnnotations: map[string]string{
-				"a": "theirs",
+				"a": testForeignValue,
+			},
+		},
+		{
+			// The CRD's CEL rules reject a reserved key at admission, so only an
+			// object stored before those rules existed reaches here: the tracker
+			// keeps owning its own name, and the reconcile stays idempotent.
+			name:            "reserved spec key loses to the tracker it collides with",
+			specAnnotations: map[string]string{managedAnnotationKeysAnnotation: testForeignValue, "a": "1"},
+			wantChanged:     true,
+			wantAnnotations: map[string]string{
+				"a":                             "1",
+				managedAnnotationKeysAnnotation: "a," + managedAnnotationKeysAnnotation,
 			},
 		},
 		{
