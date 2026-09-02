@@ -18,6 +18,15 @@ spec:
     settings:
       otel:
         exporter: otlp
+  # Renders a ServiceMonitor for the proxy Service. Enabling this also appends
+  # "prometheus" to litellm_settings.callbacks, because litellm only serves
+  # /metrics once that callback is loaded — skipped here, since the callback
+  # above already names it.
+  metrics:
+    enabled: true
+    interval: 30s
+    labels:
+      release: kube-prometheus-stack
   envFrom:
     - secretRef:
         name: litellm-secrets

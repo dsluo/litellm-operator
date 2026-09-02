@@ -93,6 +93,50 @@ type ProxyServiceSpec struct {
 	Port int32 `json:"port,omitempty"`
 }
 
+// MetricsSpec configures Prometheus scraping of the proxy. Enabling it makes the
+// operator render a ServiceMonitor for the proxy's Service and, because the
+// litellm /metrics endpoint only exists once the prometheus callback is loaded,
+// append "prometheus" to litellm_settings.callbacks. Without that callback
+// litellm never builds the PrometheusLogger and the endpoint 404s, which would
+// leave Prometheus reporting the target as down rather than merely empty.
+type MetricsSpec struct {
+	// Enabled turns on the ServiceMonitor and the implicit prometheus callback.
+	// The ServiceMonitor is only rendered when the Prometheus Operator CRDs are
+	// installed; without them the operator logs a warning and skips it.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Path to scrape. Defaults to /metrics, where litellm serves the registry.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Interval between scrapes, as a Prometheus duration (e.g. "30s"). Empty
+	// leaves the Prometheus global default in force.
+	// +kubebuilder:validation:Pattern=`^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$`
+	// +optional
+	Interval string `json:"interval,omitempty"`
+
+	// ScrapeTimeout for a single scrape, as a Prometheus duration. Must not
+	// exceed Interval; Prometheus rejects the scrape config otherwise.
+	// +kubebuilder:validation:Pattern=`^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$`
+	// +optional
+	ScrapeTimeout string `json:"scrapeTimeout,omitempty"`
+
+	// Labels are merged onto the ServiceMonitor's own labels, for the selector a
+	// Prometheus instance uses to pick monitors up (kube-prometheus-stack
+	// commonly wants release: <its release name>).
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// BearerTokenRef points at a Secret key holding a litellm API key. Litellm
+	// requires authentication on /metrics by default in recent releases
+	// (litellm_settings.require_auth_for_metrics_endpoint), so set this unless
+	// the proxy has that turned off. The Secret must live in the proxy's
+	// namespace and be readable by the Prometheus Operator.
+	// +optional
+	BearerTokenRef *SecretKeyRef `json:"bearerTokenRef,omitempty"`
+}
+
 // LiteLLMProxySpec defines a managed LiteLLM proxy and the models it serves.
 type LiteLLMProxySpec struct {
 	// Image is the proxy container image.
@@ -221,6 +265,10 @@ type LiteLLMProxySpec struct {
 	// Service configures the Service fronting the proxy.
 	// +optional
 	Service ProxyServiceSpec `json:"service,omitempty"`
+
+	// Metrics configures Prometheus scraping of the proxy.
+	// +optional
+	Metrics *MetricsSpec `json:"metrics,omitempty"`
 
 	// Resources sets the proxy container resource requirements.
 	// +optional

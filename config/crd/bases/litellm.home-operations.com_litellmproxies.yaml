@@ -1465,6 +1465,58 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              metrics:
+                description: Metrics configures Prometheus scraping of the proxy.
+                properties:
+                  bearerTokenRef:
+                    description: |-
+                      BearerTokenRef points at a Secret key holding a litellm API key. Litellm
+                      requires authentication on /metrics by default in recent releases
+                      (litellm_settings.require_auth_for_metrics_endpoint), so set this unless
+                      the proxy has that turned off. The Secret must live in the proxy's
+                      namespace and be readable by the Prometheus Operator.
+                    properties:
+                      key:
+                        description: Key within the Secret holding the value.
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  enabled:
+                    description: |-
+                      Enabled turns on the ServiceMonitor and the implicit prometheus callback.
+                      The ServiceMonitor is only rendered when the Prometheus Operator CRDs are
+                      installed; without them the operator logs a warning and skips it.
+                    type: boolean
+                  interval:
+                    description: |-
+                      Interval between scrapes, as a Prometheus duration (e.g. "30s"). Empty
+                      leaves the Prometheus global default in force.
+                    pattern: ^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$
+                    type: string
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Labels are merged onto the ServiceMonitor's own labels, for the selector a
+                      Prometheus instance uses to pick monitors up (kube-prometheus-stack
+                      commonly wants release: <its release name>).
+                    type: object
+                  path:
+                    description: Path to scrape. Defaults to /metrics, where litellm
+                      serves the registry.
+                    type: string
+                  scrapeTimeout:
+                    description: |-
+                      ScrapeTimeout for a single scrape, as a Prometheus duration. Must not
+                      exceed Interval; Prometheus rejects the scrape config otherwise.
+                    pattern: ^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$
+                    type: string
+                type: object
               modelSelector:
                 description: |-
                   ModelSelector selects which LiteLLMModel resources (in this namespace) this

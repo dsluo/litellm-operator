@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,7 +15,12 @@ import (
 	litellmv1alpha1 "github.com/home-operations/litellm-operator/api/v1alpha1"
 )
 
-const configHashAnnotation = "litellm.home-operations.com/config-hash"
+const (
+	configHashAnnotation = "litellm.home-operations.com/config-hash"
+
+	// defaultMetricsPath is where litellm serves the prometheus registry.
+	defaultMetricsPath = "/metrics"
+)
 
 func configMapName(proxy *litellmv1alpha1.LiteLLMProxy) string {
 	return proxy.Name + "-config"
@@ -85,6 +91,56 @@ func buildService(proxy *litellmv1alpha1.LiteLLMProxy) *corev1.Service {
 			}},
 		},
 	}
+}
+
+func buildServiceMonitor(proxy *litellmv1alpha1.LiteLLMProxy) *monitoringv1.ServiceMonitor {
+	metrics := proxy.Spec.Metrics
+	selector := selectorLabels(proxy)
+
+	path := metrics.Path
+	if path == "" {
+		path = defaultMetricsPath
+	}
+	endpoint := monitoringv1.Endpoint{
+		Port:          httpPortName,
+		Path:          path,
+		Interval:      monitoringv1.Duration(metrics.Interval),
+		ScrapeTimeout: monitoringv1.Duration(metrics.ScrapeTimeout),
+	}
+	if ref := metrics.BearerTokenRef; ref != nil {
+		endpoint.Authorization = &monitoringv1.SafeAuthorization{
+			Credentials: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+				Key:                  ref.Key,
+			},
+		}
+	}
+
+	return &monitoringv1.ServiceMonitor{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      proxy.Name,
+			Namespace: proxy.Namespace,
+			Labels:    monitorLabels(selector, metrics.Labels),
+		},
+		Spec: monitoringv1.ServiceMonitorSpec{
+			Selector:          metav1.LabelSelector{MatchLabels: selector},
+			NamespaceSelector: monitoringv1.NamespaceSelector{MatchNames: []string{proxy.Namespace}},
+			Endpoints:         []monitoringv1.Endpoint{endpoint},
+		},
+	}
+}
+
+// monitorLabels merges spec.metrics.labels under the operator-managed labels.
+// The extra labels exist so a Prometheus instance's serviceMonitorSelector can
+// pick the monitor up (kube-prometheus-stack usually keys off a release label).
+func monitorLabels(selector, extra map[string]string) map[string]string {
+	if len(extra) == 0 {
+		return selector
+	}
+	merged := make(map[string]string, len(selector)+len(extra))
+	maps.Copy(merged, extra)
+	maps.Copy(merged, selector)
+	return merged
 }
 
 func buildRoute(proxy *litellmv1alpha1.LiteLLMProxy) *gatewayv1.HTTPRoute {

@@ -10,8 +10,10 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -80,6 +82,7 @@ var _ = BeforeSuite(func() {
 	Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
 	Expect(litellmv1alpha1.AddToScheme(scheme)).To(Succeed())
 	Expect(gatewayv1.Install(scheme)).To(Succeed())
+	Expect(monitoringv1.AddToScheme(scheme)).To(Succeed())
 	Expect(inferencev1alpha1.AddToScheme(scheme)).To(Succeed())
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
@@ -253,6 +256,40 @@ var _ = Describe("LiteLLMProxy reconciliation", func() {
 			var cm corev1.ConfigMap
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName + "-config", Namespace: ns}, &cm)).To(Succeed())
 			g.Expect(cm.Data["config.yaml"]).To(ContainSubstring("http://grafana.default.svc.cluster.local:8000/mcp"))
+		}, 10*time.Second, 250*time.Millisecond).Should(Succeed())
+	})
+})
+
+var _ = Describe("LiteLLMProxy metrics without the Prometheus Operator", func() {
+	const ns = "default"
+
+	// The ServiceMonitor CRD is deliberately not installed in this suite, which
+	// is the common case for a cluster with no Prometheus Operator. Enabling
+	// spec.metrics there must degrade to a no-op: the proxy still reconciles to
+	// Ready rather than wedging on a kind the operator cannot address.
+	It("still reconciles the proxy to Ready", func() {
+		proxy := &litellmv1alpha1.LiteLLMProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "metrics", Namespace: ns},
+			Spec: litellmv1alpha1.LiteLLMProxySpec{
+				Service: litellmv1alpha1.ProxyServiceSpec{Port: 4000},
+				Metrics: &litellmv1alpha1.MetricsSpec{Enabled: true},
+			},
+		}
+		Expect(k8sClient.Create(ctx, proxy)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			var got litellmv1alpha1.LiteLLMProxy
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "metrics", Namespace: ns}, &got)).To(Succeed())
+			cond := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "reason=%s message=%s", cond.Reason, cond.Message)
+		}, 10*time.Second, 250*time.Millisecond).Should(Succeed())
+
+		By("still injecting the prometheus callback, which is independent of the CRD")
+		Eventually(func(g Gomega) {
+			var cm corev1.ConfigMap
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "metrics-config", Namespace: ns}, &cm)).To(Succeed())
+			g.Expect(cm.Data["config.yaml"]).To(ContainSubstring("prometheus"))
 		}, 10*time.Second, 250*time.Millisecond).Should(Succeed())
 	})
 })

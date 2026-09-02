@@ -466,3 +466,112 @@ func TestRenderConfig_APIModeSettingsOmitModelListAndEnableDBStore(t *testing.T)
 	require.Len(t, got.models, 1)
 	assert.Equal(t, "glm-5.2", got.models[0][keyModelName])
 }
+
+func TestRenderConfig_MetricsInjectsPrometheusCallback(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings *runtime.RawExtension
+		cb       *litellmv1alpha1.CallbackSpec
+		want     []any
+	}{
+		{
+			name: "no existing callbacks",
+			want: []any{prometheusCallback},
+		},
+		{
+			name: "appends alongside existing callbacks",
+			cb:   &litellmv1alpha1.CallbackSpec{Callbacks: []string{"datadog"}},
+			want: []any{"datadog", prometheusCallback},
+		},
+		{
+			name: "no duplicate when already listed",
+			cb:   &litellmv1alpha1.CallbackSpec{Callbacks: []string{prometheusCallback}},
+			want: []any{prometheusCallback},
+		},
+		{
+			name:     "no duplicate when a raw passthrough already lists it",
+			settings: raw(`{"callbacks":["prometheus"]}`),
+			want:     []any{prometheusCallback},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy := &litellmv1alpha1.LiteLLMProxy{
+				Spec: litellmv1alpha1.LiteLLMProxySpec{
+					LitellmSettings: tc.settings,
+					Callbacks:       tc.cb,
+					Metrics:         &litellmv1alpha1.MetricsSpec{Enabled: true},
+				},
+			}
+			got, err := renderConfig(proxy, nil, nil, nil)
+			require.NoError(t, err)
+
+			ls := parse(t, got.yaml)["litellm_settings"].(map[string]any)
+			assert.Equal(t, tc.want, ls["callbacks"])
+		})
+	}
+}
+
+// A proxy that only names prometheus in success_callback already has the logger
+// loaded, so metrics must not add a second registration under callbacks.
+func TestRenderConfig_MetricsRespectsPrometheusInSuccessCallback(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		Spec: litellmv1alpha1.LiteLLMProxySpec{
+			Callbacks: &litellmv1alpha1.CallbackSpec{Success: []string{prometheusCallback}},
+			Metrics:   &litellmv1alpha1.MetricsSpec{Enabled: true},
+		},
+	}
+	got, err := renderConfig(proxy, nil, nil, nil)
+	require.NoError(t, err)
+
+	ls := parse(t, got.yaml)["litellm_settings"].(map[string]any)
+	assert.Nil(t, ls["callbacks"])
+	assert.Equal(t, []any{prometheusCallback}, ls["success_callback"])
+}
+
+func TestRenderConfig_MetricsDisabledLeavesCallbacksAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		metrics *litellmv1alpha1.MetricsSpec
+	}{
+		{name: "unset"},
+		{name: "explicitly disabled", metrics: &litellmv1alpha1.MetricsSpec{Enabled: false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy := &litellmv1alpha1.LiteLLMProxy{Spec: litellmv1alpha1.LiteLLMProxySpec{Metrics: tc.metrics}}
+			got, err := renderConfig(proxy, nil, nil, nil)
+			require.NoError(t, err)
+
+			ls, ok := parse(t, got.yaml)["litellm_settings"].(map[string]any)
+			if ok {
+				assert.Nil(t, ls["callbacks"])
+			}
+		})
+	}
+}
+
+func TestRenderConfig_MetricsRejectsMalformedCallbackList(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		Spec: litellmv1alpha1.LiteLLMProxySpec{
+			LitellmSettings: raw(`{"callbacks":"prometheus"}`),
+			Metrics:         &litellmv1alpha1.MetricsSpec{Enabled: true},
+		},
+	}
+	_, err := renderConfig(proxy, nil, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "litellm_settings.callbacks")
+}
+
+// A non-mapping litellm_settings arriving via extraConfig must be rejected, not
+// silently replaced by the injected callbacks block.
+func TestRenderConfig_MetricsRejectsNonMappingLitellmSettings(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		Spec: litellmv1alpha1.LiteLLMProxySpec{
+			ExtraConfig: raw(`{"litellm_settings":"cache"}`),
+			Metrics:     &litellmv1alpha1.MetricsSpec{Enabled: true},
+		},
+	}
+	_, err := renderConfig(proxy, nil, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "litellm_settings: expected a mapping")
+}

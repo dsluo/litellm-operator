@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +24,10 @@ const (
 	proxyContainer   = appName
 	proxyPort        = 4000
 	httpPortName     = "http"
+
+	// prometheusCallback is the litellm callback that builds the PrometheusLogger
+	// and mounts /metrics.
+	prometheusCallback = "prometheus"
 
 	conditionTypeReady        = "Ready"
 	conditionReasonReconciled = "Reconciled"
@@ -165,6 +170,9 @@ func buildBaseConfig(proxy *litellmv1alpha1.LiteLLMProxy) (map[string]any, error
 		}
 	}
 	if err := applyCallbacks(config, proxy.Spec.Callbacks); err != nil {
+		return nil, err
+	}
+	if err := applyMetricsCallback(config, proxy.Spec.Metrics); err != nil {
 		return nil, err
 	}
 	return config, nil
@@ -340,6 +348,68 @@ func applyCallbacks(config map[string]any, cb *litellmv1alpha1.CallbackSpec) err
 		config["litellm_settings"] = ls
 	}
 	return mergeValue(config, "callback_settings", cb.Settings)
+}
+
+// applyMetricsCallback appends the prometheus callback when spec.metrics is
+// enabled. litellm only constructs the PrometheusLogger, and so only serves
+// /metrics, once a callback list names "prometheus"; a ServiceMonitor pointed at
+// a proxy without it would scrape a 404 and show up as a down target rather than
+// an empty one. Runs after applyCallbacks so it sees both the typed callback
+// lists and anything a raw litellmSettings passthrough already set.
+func applyMetricsCallback(config map[string]any, metrics *litellmv1alpha1.MetricsSpec) error {
+	if metrics == nil || !metrics.Enabled {
+		return nil
+	}
+	ls := map[string]any{}
+	switch existing := config["litellm_settings"].(type) {
+	case nil:
+	case map[string]any:
+		ls = existing
+	default:
+		return fmt.Errorf("litellm_settings: expected a mapping, got %T", existing)
+	}
+	for _, key := range []string{"callbacks", "success_callback", "failure_callback"} {
+		names, err := callbackNames(ls[key])
+		if err != nil {
+			return fmt.Errorf("litellm_settings.%s: %w", key, err)
+		}
+		if slices.Contains(names, prometheusCallback) {
+			return nil
+		}
+	}
+	switch list := ls["callbacks"].(type) {
+	case nil:
+		ls["callbacks"] = []string{prometheusCallback}
+	case []string:
+		ls["callbacks"] = append(slices.Clone(list), prometheusCallback)
+	case []any:
+		ls["callbacks"] = append(slices.Clone(list), prometheusCallback)
+	}
+	config["litellm_settings"] = ls
+	return nil
+}
+
+// callbackNames reads the string entries of a callback list, which arrives as
+// []string from the typed spec and []any once decoded from a raw passthrough.
+// Non-string entries are ignored: litellm accepts callback objects there, and
+// they can never be the plain "prometheus" name being looked for.
+func callbackNames(v any) ([]string, error) {
+	switch list := v.(type) {
+	case nil:
+		return nil, nil
+	case []string:
+		return list, nil
+	case []any:
+		names := make([]string, 0, len(list))
+		for _, item := range list {
+			if name, ok := item.(string); ok {
+				names = append(names, name)
+			}
+		}
+		return names, nil
+	default:
+		return nil, fmt.Errorf("expected a list, got %T", v)
+	}
 }
 
 // topLevelBlocks maps each named passthrough field to its config.yaml key.

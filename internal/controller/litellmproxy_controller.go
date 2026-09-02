@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -11,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +31,12 @@ import (
 type LiteLLMProxyReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// serviceMonitorAvailable records whether the Prometheus Operator CRDs were
+	// present at startup. SetupWithManager only watches ServiceMonitors when they
+	// are: a watch on a kind the API server doesn't serve fails the cache sync and
+	// takes the whole manager down with it.
+	serviceMonitorAvailable bool
 }
 
 // +kubebuilder:rbac:groups=litellm.home-operations.com,resources=litellmproxies,verbs=get;list;watch;create;update;patch;delete
@@ -39,6 +47,7 @@ type LiteLLMProxyReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile renders the proxy config from matching models and applies the owned resources.
 func (r *LiteLLMProxyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -88,6 +97,9 @@ func (r *LiteLLMProxyReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	if err := r.reconcileRoute(ctx, &proxy); err != nil {
 		return ctrl.Result{}, r.markFailed(ctx, &proxy, "RouteFailed", err.Error())
+	}
+	if err := r.reconcileServiceMonitor(ctx, &proxy); err != nil {
+		return ctrl.Result{}, r.markFailed(ctx, &proxy, "ServiceMonitorFailed", err.Error())
 	}
 
 	if apiMode {
@@ -235,6 +247,53 @@ func (r *LiteLLMProxyReconciler) reconcileRoute(ctx context.Context, proxy *lite
 	return err
 }
 
+// reconcileServiceMonitor creates/updates the proxy's ServiceMonitor when
+// spec.metrics is enabled, and deletes the one it previously created when it is
+// disabled. The CRD is optional: without it there is nothing to create and
+// nothing the operator could have created to clean up, so both paths are
+// skipped entirely. Touching the type at all in that case is not merely
+// wasteful but an error, since a scheme without monitoringv1 registered fails
+// before the request is ever made, and that is not a no-matching-kind error.
+func (r *LiteLLMProxyReconciler) reconcileServiceMonitor(ctx context.Context, proxy *litellmv1alpha1.LiteLLMProxy) error {
+	if !r.serviceMonitorAvailable {
+		return nil
+	}
+	if proxy.Spec.Metrics == nil || !proxy.Spec.Metrics.Enabled {
+		return r.deleteOwnedServiceMonitor(ctx, proxy)
+	}
+	desired := buildServiceMonitor(proxy)
+	monitor := &monitoringv1.ServiceMonitor{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, monitor, func() error {
+		monitor.Labels = desired.Labels
+		monitor.Spec = desired.Spec
+		return controllerutil.SetControllerReference(proxy, monitor, r.Scheme)
+	})
+	return err
+}
+
+// deleteOwnedServiceMonitor removes the proxy's ServiceMonitor, but only when
+// the operator owns it. A ServiceMonitor named after the proxy in its namespace
+// is exactly what a user scraping the proxy by hand would already have, and
+// deleting that on every reconcile of a proxy that never asked for metrics
+// would silently take their monitoring down.
+func (r *LiteLLMProxyReconciler) deleteOwnedServiceMonitor(ctx context.Context, proxy *litellmv1alpha1.LiteLLMProxy) error {
+	monitor := &monitoringv1.ServiceMonitor{}
+	key := client.ObjectKey{Name: proxy.Name, Namespace: proxy.Namespace}
+	if err := r.Get(ctx, key, monitor); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if !metav1.IsControlledBy(monitor, proxy) {
+		return nil
+	}
+	if err := r.Delete(ctx, monitor); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
 // syncModelsViaAPI pushes the rendered model entries to the proxy's admin API.
 func (r *LiteLLMProxyReconciler) syncModelsViaAPI(ctx context.Context, proxy *litellmv1alpha1.LiteLLMProxy, desired []map[string]any) error {
 	if proxy.Spec.APIAccess == nil {
@@ -337,7 +396,17 @@ func (r *LiteLLMProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		return s.Spec.ProxyRef, true
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	available, err := serviceMonitorCRDInstalled(mgr)
+	if err != nil {
+		return err
+	}
+	r.serviceMonitorAvailable = available
+	if !r.serviceMonitorAvailable {
+		ctrl.Log.WithName("setup").Info("monitoring.coreos.com ServiceMonitor CRD not installed; " +
+			"spec.metrics will be skipped on every proxy until the Prometheus Operator CRDs are added")
+	}
+
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&litellmv1alpha1.LiteLLMProxy{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
@@ -345,6 +414,26 @@ func (r *LiteLLMProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&gatewayv1.HTTPRoute{}).
 		Watches(&litellmv1alpha1.LiteLLMModel{}, handler.EnqueueRequestsFromMapFunc(r.proxiesForObject(modelRef))).
 		Watches(&litellmv1alpha1.LiteLLMGuardrail{}, handler.EnqueueRequestsFromMapFunc(r.proxiesForObject(guardrailRef))).
-		Watches(&litellmv1alpha1.LiteLLMMCPServer{}, handler.EnqueueRequestsFromMapFunc(r.proxiesForObject(mcpRef))).
-		Complete(r)
+		Watches(&litellmv1alpha1.LiteLLMMCPServer{}, handler.EnqueueRequestsFromMapFunc(r.proxiesForObject(mcpRef)))
+	if r.serviceMonitorAvailable {
+		builder = builder.Owns(&monitoringv1.ServiceMonitor{})
+	}
+	return builder.Complete(r)
+}
+
+// serviceMonitorCRDInstalled reports whether the API server serves
+// monitoring.coreos.com/v1 ServiceMonitor. Only a no-matching-kind error means
+// absent; any other error means discovery itself failed, and answering "absent"
+// there would strand every metrics-enabled proxy without a ServiceMonitor for
+// the life of the process. Those are returned so startup fails and a restart
+// retries the lookup.
+func serviceMonitorCRDInstalled(mgr ctrl.Manager) (bool, error) {
+	gk := schema.GroupKind{Group: monitoringv1.SchemeGroupVersion.Group, Kind: monitoringv1.ServiceMonitorsKind}
+	if _, err := mgr.GetRESTMapper().RESTMapping(gk, monitoringv1.SchemeGroupVersion.Version); err != nil {
+		if meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("discovering the ServiceMonitor CRD: %w", err)
+	}
+	return true, nil
 }

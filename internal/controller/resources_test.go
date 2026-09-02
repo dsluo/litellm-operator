@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -212,4 +213,84 @@ func TestBuildDeployment_PodLabelsCannotOverrideSelector(t *testing.T) {
 	d := buildDeployment(proxy, "hash", nil)
 	assert.Equal(t, selectorLabels(proxy)[selectorKey], d.Spec.Template.Labels[selectorKey])
 	assert.Equal(t, "ai", d.Spec.Template.Labels["team"])
+}
+
+func TestBuildServiceMonitor_Defaults(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: "ai"},
+		Spec:       litellmv1alpha1.LiteLLMProxySpec{Metrics: &litellmv1alpha1.MetricsSpec{Enabled: true}},
+	}
+	sm := buildServiceMonitor(proxy)
+
+	assert.Equal(t, proxyName, sm.Name)
+	assert.Equal(t, "ai", sm.Namespace)
+	assert.Equal(t, selectorLabels(proxy), sm.Spec.Selector.MatchLabels)
+	assert.Equal(t, []string{"ai"}, sm.Spec.NamespaceSelector.MatchNames)
+
+	require.Len(t, sm.Spec.Endpoints, 1)
+	ep := sm.Spec.Endpoints[0]
+	assert.Equal(t, httpPortName, ep.Port) // named, so a custom service.port still matches
+	assert.Equal(t, "/metrics", ep.Path)
+	assert.Empty(t, ep.Interval) // left to the Prometheus global default
+	assert.Nil(t, ep.Authorization)
+}
+
+func TestBuildServiceMonitor_ScrapeOptionsAndLabels(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: "ai"},
+		Spec: litellmv1alpha1.LiteLLMProxySpec{
+			Metrics: &litellmv1alpha1.MetricsSpec{
+				Enabled:       true,
+				Path:          "/custom-metrics",
+				Interval:      "30s",
+				ScrapeTimeout: "10s",
+				Labels:        map[string]string{"release": "kube-prometheus-stack"},
+			},
+		},
+	}
+	sm := buildServiceMonitor(proxy)
+
+	ep := sm.Spec.Endpoints[0]
+	assert.Equal(t, "/custom-metrics", ep.Path)
+	assert.Equal(t, monitoringv1.Duration("30s"), ep.Interval)
+	assert.Equal(t, monitoringv1.Duration("10s"), ep.ScrapeTimeout)
+
+	assert.Equal(t, "kube-prometheus-stack", sm.Labels["release"])
+	assert.Equal(t, appName, sm.Labels["app.kubernetes.io/name"])
+}
+
+// The operator-managed labels must survive a user label of the same key, or the
+// ServiceMonitor stops identifying the proxy it belongs to.
+func TestBuildServiceMonitor_UserLabelsCannotOverrideManaged(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: "ai"},
+		Spec: litellmv1alpha1.LiteLLMProxySpec{
+			Metrics: &litellmv1alpha1.MetricsSpec{
+				Enabled: true,
+				Labels:  map[string]string{"app.kubernetes.io/name": "not-litellm"},
+			},
+		},
+	}
+	sm := buildServiceMonitor(proxy)
+
+	assert.Equal(t, appName, sm.Labels["app.kubernetes.io/name"])
+}
+
+func TestBuildServiceMonitor_BearerTokenRefBecomesAuthorization(t *testing.T) {
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: "ai"},
+		Spec: litellmv1alpha1.LiteLLMProxySpec{
+			Metrics: &litellmv1alpha1.MetricsSpec{
+				Enabled:        true,
+				BearerTokenRef: &litellmv1alpha1.SecretKeyRef{Name: "litellm-secrets", Key: "metrics-key"},
+			},
+		},
+	}
+	sm := buildServiceMonitor(proxy)
+
+	auth := sm.Spec.Endpoints[0].Authorization
+	require.NotNil(t, auth)
+	require.NotNil(t, auth.Credentials)
+	assert.Equal(t, "litellm-secrets", auth.Credentials.Name)
+	assert.Equal(t, "metrics-key", auth.Credentials.Key)
 }

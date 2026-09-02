@@ -131,6 +131,44 @@ spec:
 The PVC (`litellm` here) must exist and, for multi-replica proxies, use an access
 mode that allows shared read-write (e.g. `ReadWriteMany`).
 
+## Metrics
+
+`spec.metrics.enabled` makes the operator render a ServiceMonitor for the proxy's
+Service, scraping the named `http` port so a custom `spec.service.port` still
+matches.
+
+**Enabling metrics also appends `prometheus` to `litellm_settings.callbacks` in
+the rendered config.** This is required, as LiteLLM does not serve `/metrics`
+without it.
+
+```yaml
+spec:
+  metrics:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    labels:
+      release: kube-prometheus-stack
+    bearerTokenRef:
+      name: litellm-secrets
+      key: metrics-key
+```
+
+`labels` is merged onto the ServiceMonitor's own labels for whatever selector
+your Prometheus uses to adopt monitors (kube-prometheus-stack keys off a release
+label); the operator's own labels always win. `bearerTokenRef` points at a Secret
+key holding a LiteLLM API key — recent LiteLLM releases require authentication on
+`/metrics` unless the proxy sets
+`litellm_settings.require_auth_for_metrics_endpoint: false`. The Secret must be
+in the proxy's namespace and readable by the Prometheus Operator.
+
+The `monitoring.coreos.com` CRDs are optional. When they're absent the operator
+logs a warning at startup and skips the ServiceMonitor on every proxy rather than
+failing; the callback is still injected, so `/metrics` is live for anything else
+that scrapes it. Install the CRDs and restart the operator to pick it up.
+
+LiteLLM ships prebuilt [Grafana dashboards](https://github.com/BerriAI/litellm/tree/main/cookbook/litellm_proxy_server/grafana_dashboard) for these metrics.
+
 ## Apply modes
 
 `spec.applyMode` controls how models reach the proxy. The default, `file`, renders
