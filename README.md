@@ -158,9 +158,27 @@ spec:
 your Prometheus uses to adopt monitors (kube-prometheus-stack keys off a release
 label); the operator's own labels always win. `bearerTokenRef` points at a Secret
 key holding a LiteLLM API key — recent LiteLLM releases require authentication on
-`/metrics` unless the proxy sets
-`litellm_settings.require_auth_for_metrics_endpoint: false`. The Secret must be
-in the proxy's namespace and readable by the Prometheus Operator.
+`/metrics`. The Secret must be in the proxy's namespace and readable by the
+Prometheus Operator. The operator resolves the reference itself and marks the
+proxy `Ready=False` with reason `MetricsSecretMissing` when the Secret, the key,
+or its value is absent — otherwise the only symptom is a Prometheus target that
+never comes up.
+
+`requireAuth: false` renders
+`litellm_settings.require_auth_for_metrics_endpoint: false` instead, serving
+`/metrics` unauthenticated so no `bearerTokenRef` is needed:
+
+```yaml
+spec:
+  metrics:
+    enabled: true
+    requireAuth: false
+```
+
+That endpoint carries per-key spend and model usage, so prefer a bearer token
+unless a NetworkPolicy already limits who can reach the proxy Service. Omitting
+`requireAuth` leaves the key out of the config entirely and LiteLLM's own default
+applies. It is a `config.yaml` setting, so changing it rolls the proxy.
 
 The `monitoring.coreos.com` CRDs are optional. When they're absent the operator
 logs a warning at startup and skips the ServiceMonitor on every proxy rather than

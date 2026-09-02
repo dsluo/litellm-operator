@@ -29,6 +29,10 @@ const (
 	// and mounts /metrics.
 	prometheusCallback = "prometheus"
 
+	// requireAuthForMetricsKey is the litellm_settings key gating /metrics behind
+	// a virtual key.
+	requireAuthForMetricsKey = "require_auth_for_metrics_endpoint"
+
 	conditionTypeReady        = "Ready"
 	conditionReasonReconciled = "Reconciled"
 
@@ -172,7 +176,7 @@ func buildBaseConfig(proxy *litellmv1alpha1.LiteLLMProxy) (map[string]any, error
 	if err := applyCallbacks(config, proxy.Spec.Callbacks); err != nil {
 		return nil, err
 	}
-	if err := applyMetricsCallback(config, proxy.Spec.Metrics); err != nil {
+	if err := applyMetricsSettings(config, proxy.Spec.Metrics); err != nil {
 		return nil, err
 	}
 	return config, nil
@@ -350,13 +354,11 @@ func applyCallbacks(config map[string]any, cb *litellmv1alpha1.CallbackSpec) err
 	return mergeValue(config, "callback_settings", cb.Settings)
 }
 
-// applyMetricsCallback appends the prometheus callback when spec.metrics is
-// enabled. litellm only constructs the PrometheusLogger, and so only serves
-// /metrics, once a callback list names "prometheus"; a ServiceMonitor pointed at
-// a proxy without it would scrape a 404 and show up as a down target rather than
-// an empty one. Runs after applyCallbacks so it sees both the typed callback
-// lists and anything a raw litellmSettings passthrough already set.
-func applyMetricsCallback(config map[string]any, metrics *litellmv1alpha1.MetricsSpec) error {
+// applyMetricsSettings folds the litellm_settings that spec.metrics implies into
+// the config: the prometheus callback that mounts /metrics, and whether that
+// endpoint requires a key. Runs after applyCallbacks so it sees both the typed
+// callback lists and anything a raw litellmSettings passthrough already set.
+func applyMetricsSettings(config map[string]any, metrics *litellmv1alpha1.MetricsSpec) error {
 	if metrics == nil || !metrics.Enabled {
 		return nil
 	}
@@ -368,6 +370,22 @@ func applyMetricsCallback(config map[string]any, metrics *litellmv1alpha1.Metric
 	default:
 		return fmt.Errorf("litellm_settings: expected a mapping, got %T", existing)
 	}
+	if err := applyPrometheusCallback(ls); err != nil {
+		return err
+	}
+	if metrics.RequireAuth != nil {
+		ls[requireAuthForMetricsKey] = *metrics.RequireAuth
+	}
+	config["litellm_settings"] = ls
+	return nil
+}
+
+// applyPrometheusCallback appends the prometheus callback unless a callback list
+// already names it. litellm only constructs the PrometheusLogger, and so only
+// serves /metrics, once a callback list names "prometheus"; a ServiceMonitor
+// pointed at a proxy without it would scrape a 404 and show up as a down target
+// rather than an empty one.
+func applyPrometheusCallback(ls map[string]any) error {
 	for _, key := range []string{"callbacks", "success_callback", "failure_callback"} {
 		names, err := callbackNames(ls[key])
 		if err != nil {
@@ -385,7 +403,6 @@ func applyMetricsCallback(config map[string]any, metrics *litellmv1alpha1.Metric
 	case []any:
 		ls["callbacks"] = append(slices.Clone(list), prometheusCallback)
 	}
-	config["litellm_settings"] = ls
 	return nil
 }
 

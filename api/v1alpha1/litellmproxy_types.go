@@ -131,10 +131,19 @@ type MetricsSpec struct {
 	// BearerTokenRef points at a Secret key holding a litellm API key. Litellm
 	// requires authentication on /metrics by default in recent releases
 	// (litellm_settings.require_auth_for_metrics_endpoint), so set this unless
-	// the proxy has that turned off. The Secret must live in the proxy's
-	// namespace and be readable by the Prometheus Operator.
+	// requireAuth is false. The Secret must live in the proxy's namespace and be
+	// readable by the Prometheus Operator.
 	// +optional
 	BearerTokenRef *SecretKeyRef `json:"bearerTokenRef,omitempty"`
+
+	// RequireAuth sets litellm_settings.require_auth_for_metrics_endpoint. Set it
+	// to false to serve /metrics unauthenticated, which makes bearerTokenRef
+	// unnecessary; the endpoint then exposes per-key spend and model usage to
+	// anything that can reach the proxy Service, so prefer a bearer token where
+	// the namespace is not already closed off by a NetworkPolicy. Leaving it
+	// unset omits the key entirely, so litellm's own default applies.
+	// +optional
+	RequireAuth *bool `json:"requireAuth,omitempty"`
 }
 
 // LiteLLMProxySpec defines a managed LiteLLM proxy and the models it serves.

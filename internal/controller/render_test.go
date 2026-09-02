@@ -550,6 +550,64 @@ func TestRenderConfig_MetricsDisabledLeavesCallbacksAlone(t *testing.T) {
 	}
 }
 
+func TestRenderConfig_MetricsRequireAuth(t *testing.T) {
+	yes, no := true, false
+	tests := []struct {
+		name    string
+		metrics *litellmv1alpha1.MetricsSpec
+		want    any
+	}{
+		{
+			name:    "unset leaves litellm's own default in force",
+			metrics: &litellmv1alpha1.MetricsSpec{Enabled: true},
+			want:    nil,
+		},
+		{
+			name:    "false serves /metrics unauthenticated",
+			metrics: &litellmv1alpha1.MetricsSpec{Enabled: true, RequireAuth: &no},
+			want:    false,
+		},
+		{
+			name:    "true is rendered explicitly",
+			metrics: &litellmv1alpha1.MetricsSpec{Enabled: true, RequireAuth: &yes},
+			want:    true,
+		},
+		{
+			name:    "ignored while metrics are disabled",
+			metrics: &litellmv1alpha1.MetricsSpec{RequireAuth: &no},
+			want:    nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy := &litellmv1alpha1.LiteLLMProxy{Spec: litellmv1alpha1.LiteLLMProxySpec{Metrics: tc.metrics}}
+			got, err := renderConfig(proxy, nil, nil, nil)
+			require.NoError(t, err)
+
+			ls, _ := parse(t, got.yaml)["litellm_settings"].(map[string]any)
+			assert.Equal(t, tc.want, ls[requireAuthForMetricsKey])
+		})
+	}
+}
+
+// requireAuth must be applied even when the prometheus callback is already
+// present, which short-circuits the callback half of the same function.
+func TestRenderConfig_MetricsRequireAuthWithPrometheusAlreadyListed(t *testing.T) {
+	no := false
+	proxy := &litellmv1alpha1.LiteLLMProxy{
+		Spec: litellmv1alpha1.LiteLLMProxySpec{
+			Callbacks: &litellmv1alpha1.CallbackSpec{Callbacks: []string{prometheusCallback}},
+			Metrics:   &litellmv1alpha1.MetricsSpec{Enabled: true, RequireAuth: &no},
+		},
+	}
+	got, err := renderConfig(proxy, nil, nil, nil)
+	require.NoError(t, err)
+
+	ls := parse(t, got.yaml)["litellm_settings"].(map[string]any)
+	assert.Equal(t, false, ls[requireAuthForMetricsKey])
+	assert.Equal(t, []any{prometheusCallback}, ls["callbacks"])
+}
+
 func TestRenderConfig_MetricsRejectsMalformedCallbackList(t *testing.T) {
 	proxy := &litellmv1alpha1.LiteLLMProxy{
 		Spec: litellmv1alpha1.LiteLLMProxySpec{

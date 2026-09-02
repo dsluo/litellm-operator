@@ -98,6 +98,9 @@ func (r *LiteLLMProxyReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.reconcileRoute(ctx, &proxy); err != nil {
 		return ctrl.Result{}, r.markFailed(ctx, &proxy, "RouteFailed", err.Error())
 	}
+	if err := r.checkMetricsBearerToken(ctx, &proxy); err != nil {
+		return ctrl.Result{}, r.markFailed(ctx, &proxy, "MetricsSecretMissing", err.Error())
+	}
 	if err := r.reconcileServiceMonitor(ctx, &proxy); err != nil {
 		return ctrl.Result{}, r.markFailed(ctx, &proxy, "ServiceMonitorFailed", err.Error())
 	}
@@ -245,6 +248,32 @@ func (r *LiteLLMProxyReconciler) reconcileRoute(ctx context.Context, proxy *lite
 		return controllerutil.SetControllerReference(proxy, route, r.Scheme)
 	})
 	return err
+}
+
+// checkMetricsBearerToken resolves spec.metrics.bearerTokenRef and reports a
+// missing Secret, missing key, or empty value. Nothing else catches those: the
+// ServiceMonitor is written happily with a dangling SecretKeySelector, and the
+// only symptom is a Prometheus target that never comes up, which is a long way
+// from the proxy for an operator that can see the Secret itself. Skipped when no
+// ServiceMonitor will be written, since nothing then consumes the token.
+func (r *LiteLLMProxyReconciler) checkMetricsBearerToken(ctx context.Context, proxy *litellmv1alpha1.LiteLLMProxy) error {
+	if !r.serviceMonitorAvailable {
+		return nil
+	}
+	metrics := proxy.Spec.Metrics
+	if metrics == nil || !metrics.Enabled || metrics.BearerTokenRef == nil {
+		return nil
+	}
+	// Only the length of the value is ever used; it must not reach a condition.
+	token, err := readSecretKey(ctx, r.Client, proxy.Namespace, *metrics.BearerTokenRef)
+	if err != nil {
+		return fmt.Errorf("spec.metrics.bearerTokenRef: %w", err)
+	}
+	if token == "" {
+		return fmt.Errorf("spec.metrics.bearerTokenRef: secret %s/%s has an empty %q",
+			proxy.Namespace, metrics.BearerTokenRef.Name, metrics.BearerTokenRef.Key)
+	}
+	return nil
 }
 
 // reconcileServiceMonitor creates/updates the proxy's ServiceMonitor when
